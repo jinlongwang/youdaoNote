@@ -20,6 +20,7 @@ from hashlib import sha1
 import hmac
 import binascii
 import random
+import httplib
 from urllib import urlencode
 import gzip, time, hmac, base64, hashlib, urllib, urllib2, logging, mimetypes
 
@@ -33,7 +34,7 @@ class ApiError(StandardError):
         StandardError.__init__(self, error)
 
       def __str__(self):
-        return 'APIError: %s: %s, request: %s' % (self.error_code, self.error)
+        return 'APIError: %s: %s' % (self.error_code, self.error)
 
 
 class Util():
@@ -45,32 +46,56 @@ class Util():
         pass
 
     @staticmethod
-    def callHttp(url,method,value_dic={},header=None):
-        if method == 'GET':
-
+    def callHttp(baseUrl,url,method,value_dic={},header=None):
+        #print url,method,value_dic,header
+        baseUrl = baseUrl.split("//")[1]
+        value_dic = urllib.urlencode(value_dic)
+        if method == "GET":
             if value_dic:
-                url_values = urllib.urlencode(value_dic)
-                full_url = url + '?' + url_values
-            else:
-                full_url = url
-            print full_url
-            if header:
-               req = urllib2.Request(url)
-               req.add_header('Authorization', 'OAuth '+header)
-               data = urllib2.urlopen(req)
-            else:
-               data = urllib2.urlopen(full_url)
-            return data.read()
+                url = url+"?"+value_dic
+        #print value_dic
+        #print url
+        headers={}
+        if header:
+           headers = {"Authorization": 'OAuth '+header}
+        conn = httplib.HTTPConnection(baseUrl)
+        conn.request(method, url, "", headers)
+        httpres = conn.getresponse()
+        if httpres.status != 200:
+            errorJson = eval(httpres.read())
+            raise ApiError(errorJson.get('error'),errorJson.get('message'))
+        return httpres.read()
 
-        if method == 'POST':
-                print url
-                cj = cookielib.CookieJar()
-                opener = urllib2.build_opener(urllib2.HTTPCookieProcessor(cj))
-                urllib2.install_opener(opener)
-                req = urllib2.Request(url, urllib.urlencode(value_dic))
-                req.add_header("Authorization",'OAuth '+header)
-                data = urllib2.urlopen(req)
-                return data.read()
+        #print httpres.read()
+        # if method == 'GET':
+        #
+        #     if value_dic:
+        #         url_values = urllib.urlencode(value_dic)
+        #         full_url = url + '?' + url_values
+        #     else:
+        #         full_url = url
+        #     print full_url
+        #     if header:
+        #        req = urllib2.Request(url)
+        #        req.add_header('Authorization', 'OAuth '+header)
+        #        data = urllib2.urlopen(req)
+        #     else:
+        #        data = urllib2.urlopen(full_url)
+        #     return data.read()
+        #
+        # if method == 'POST':
+        #         print url
+        #         #cj = cookielib.CookieJar()
+        #         opener = urllib2.build_opener()
+        #         urllib2.install_opener(opener)
+        #         req = urllib2.Request(url, urllib.urlencode(value_dic))
+        #         req.add_header("Content-Type","application/x-www-form-urlencoded")
+        #         req.add_header("Authorization",'OAuth '+header)
+        #         #req.add_header("User-Agent","Mozilla/4.0 (compatible; MSIE 6.0; Windows NT 5.1; SV1; .NET CLR 1.1.4322; .NET CLR 2.0.50727)")
+        #         print req.headers,'-------------'
+        #         data = urllib2.urlopen(req)
+        #
+        #         return data.read()
 
     @staticmethod
     def sign_request(key,base_string):
@@ -81,8 +106,8 @@ class Util():
         hashed = hmac.new(key, base_string, sha1)
         # The signature
         final_sign =  binascii.b2a_base64(hashed.digest())[:-1]
-        #print '---------',final_sign,'-----'
-        return  final_sign
+        print '---------',final_sign,'-----'
+        return  Util.special_replace(final_sign)
 
     @staticmethod
     def getBaseSignString(method,httpUrl,httpType,**kw):
@@ -115,7 +140,7 @@ class Util():
         seq_string = '&'.join(seq_list)
 
         seq_string = Util.special_replace(seq_string)
-        print sign_string+'&'+seq_string,'------'
+        print 'basestring:-------', sign_string+'&'+seq_string, '--------'
         return sign_string+'&'+seq_string
 
     @staticmethod
@@ -124,7 +149,7 @@ class Util():
         if not TokenSecret:
             TokenSecret = ""
         finalKey = signKey+"&"+TokenSecret
-        #print finalKey,'==============------'
+        print 'key:',finalKey,'==============------'
         return finalKey
 
     @staticmethod
@@ -145,16 +170,16 @@ class APIClient(object):
     """
     oauth1.0认证
     """
-    def __init__(self,baseUrl,consumerKey,consumerSecret,redirect_uri=None,oauth_version='1.0'):
+    def __init__(self,baseUrl,consumerKey,consumerSecret,access_token=None,access_secret=None,redirect_uri=None,oauth_version='1.0'):
         self.baseUrl = baseUrl
         self.consumerKey = consumerKey
         self.consumerSecret = consumerSecret
         self.redirect_uri = redirect_uri
         self.oauth_version = oauth_version
+        self.access_token = access_token
+        self.access_secret = access_secret
         self.request_token = None
         self.request_secret = None
-        self.access_token = None
-        self.access_secret = None
         self.oauth_callback = None
         self.oauth_verifier = None
 
@@ -188,7 +213,7 @@ class APIClient(object):
                                                          )
         #print 'oauth_signature',oauth_signature
         value_dic['oauth_signature'] = oauth_signature
-        page = Util.callHttp(oauth_url,'GET',value_dic)
+        page = Util.callHttp(self.baseUrl, "/oauth/request_token", 'GET', value_dic)
         print page
         request_dic = self.__result2dict(page)
         self.request_token = request_dic.get('oauth_token')
@@ -222,45 +247,44 @@ class APIClient(object):
         #print 'oauth_signature',oauth_signature
         value_dic['oauth_signature'] = oauth_signature
         print value_dic
-        page = Util.callHttp(access_url,'GET',value_dic)
+        page = Util.callHttp(self.baseUrl, "/oauth/access_token", 'GET', value_dic)
         request_dic = self.__result2dict(page)
         self.access_token = request_dic.get('oauth_token')
         self.access_secret = request_dic.get('oauth_token_secret')
         return self.access_token,self.access_secret
 
 
-    def get_user_info(self,access_token=None,access_secret=None):
+    def get_user_info(self):
         """
         查看用户信息
         :param access_token:
         :param access_secret:
         :return:json
         """
-        if not access_secret:
-            raise ApiError('10','not have access_token')
+
         get_user_url = self.baseUrl + '/yws/open/user/get.json'
-        self.access_token = access_token
-        self.access_secret = access_secret
         header_string = self.__getSignHeader(get_user_url,'GET')
-        page = Util.callHttp(get_user_url,'GET',header=header_string)
+        page = ""
+        try:
+            page = Util.callHttp(self.baseUrl, "/yws/open/user/get.json", 'GET', header=header_string)
+        except ApiError,e:
+            print e
         return page
 
 
-    def get_notebook_all(self,access_token=None,access_secret=None):
+    def get_notebook_all(self):
         """
         查看用户全部笔记本
         :param access_token:
         :param access_secret:
         :return:json
         """
-        self.access_token = access_token
-        self.access_secret = access_secret
         notebook_all_url = self.baseUrl+'/yws/open/notebook/all.json'
         header_string = self.__getSignHeader(notebook_all_url,'POST')
-        page = Util.callHttp(notebook_all_url,'POST',header=header_string)
+        page = Util.callHttp(self.baseUrl, "/yws/open/notebook/all.json", 'POST', header=header_string)
         return page
 
-    def get_notebook_list(self,notebook_path,access_token=None,access_secret=None):
+    def get_notebook_list(self,notebook_path):
         """
         列出笔记本下的笔记
         :param notebook_path:
@@ -268,8 +292,6 @@ class APIClient(object):
         :param access_sercret:
         :return:json
         """
-        self.access_token = access_token
-        self.access_secret = access_secret
         notebook_list_url = self.baseUrl+'/yws/open/notebook/list.json'
         header_dic = self.__param2dic(oauth_consumer_key=self.consumerKey,oauth_token=self.access_token,
                                         oauth_signature_method='HMAC-SHA1',oauth_timestamp=self.__get_timestamp(),
@@ -288,12 +310,10 @@ class APIClient(object):
                                                          )
         header_dic['oauth_signature'] = oauth_signature
         header_string = self.__headerdict2String(header_dic)
-        page = Util.callHttp(notebook_list_url, 'POST', value_dic={'notebook':notebook_path}, header=header_string)
+        page = Util.callHttp(self.baseUrl, "/yws/open/notebook/list.json", 'POST', value_dic={'notebook':notebook_path}, header=header_string)
         return page
 
-    def get_note(self, note_path, access_token=None, access_secret=None):
-        self.access_token = access_token
-        self.access_secret = access_secret
+    def get_note(self, note_path):
         get_note_url = self.baseUrl+'/yws/open/note/get.json'
         header_dic = self.__param2dic(oauth_consumer_key=self.consumerKey,oauth_token=self.access_token,
                                         oauth_signature_method='HMAC-SHA1',oauth_timestamp=self.__get_timestamp(),
@@ -312,22 +332,21 @@ class APIClient(object):
                                                          )
         header_dic['oauth_signature'] = oauth_signature
         header_string = self.__headerdict2String(header_dic)
-        page = Util.callHttp(get_note_url, 'POST', value_dic={'path': note_path}, header=header_string)
+        page = Util.callHttp(self.baseUrl, "/yws/open/note/get.json", 'POST', value_dic={'path': note_path}, header=header_string)
         return page
 
-    def get_note_resource(self, resource_path, access_token=None, access_secret=None):
+    def get_note_resource(self, resource_path):
         resource_path = self.baseUrl + "/yws/open/resource/download/8/5A80636AFCB046D1AEA794AA16C802EC"
-        self.access_token = access_token
-        self.access_secret = access_secret
         header_string = self.__getSignHeader(resource_path,'GET')
-        page = Util.callHttp(resource_path,'GET',header=header_string)
+        page = Util.callHttp(self.baseUrl, resource_path, 'GET', header=header_string)
         return page
 
     def __get_timestamp(self):
         return int(time.time())
 
     def __get_nonce(self):
-        return str(random.randint(999999999999999,10000000000000000))
+        #return str(random.randint(999999999999999,10000000000000000))
+        return str(random.randint(9999,100000))
 
     def __result2dict(self,result):
         dic = {}
@@ -348,12 +367,14 @@ class APIClient(object):
         header_dic = self.__param2dic(oauth_consumer_key=self.consumerKey,oauth_token=self.access_token,
                                         oauth_signature_method='HMAC-SHA1',oauth_timestamp=self.__get_timestamp(),
                                         oauth_nonce=self.__get_nonce(),oauth_version=self.oauth_version)
+
+        print header_dic,'-----------------'
         oauth_signature = Util.sign_request(Util.getSignNameKey(self.consumerSecret,self.access_secret),
                                                          Util.getBaseSignString(method,url,1,
                                                                    oauth_consumer_key=self.consumerKey,
                                                                    oauth_token=self.access_token,
                                                                    oauth_signature_method='HMAC-SHA1',
-                                                                   oauth_timestamp=self.__get_timestamp(),
+                                                                   oauth_timestamp=header_dic.get('oauth_timestamp'),
                                                                    oauth_nonce = header_dic.get('oauth_nonce'),
                                                                    oauth_version = self.oauth_version
                                                                    )
@@ -367,24 +388,25 @@ class APIClient(object):
 
 if __name__ == "__main__":
     print '----------start-----------'
-    client = APIClient("http://note.youdao.com",'76c0ede9b5eaebab5e1d1dae506a54ab','f0d74cfe5ed0846430b69a1e2014bd1a')
-    url,requst_token,request_secret = client.get_request_token("www.baidu.com")
-    print url,requst_token,request_secret
-    #client.set_oauth_verifier()
+    client = APIClient("http://note.youdao.com",'76c0ede9b5eaebab5e1d1dae506a54ab','f0d74cfe5ed0846430b69a1e2014bd1a',access_token="ff56fa310b5f4b23f34236d4ca63d6ce",access_secret="d553e2e77ee224e6f2f183eee45ff53d")
+    #client.get_request_token()
+    #url,requst_token,request_secret = client.get_request_token()
+    #print url,requst_token,request_secret
+    # client.set_oauth_verifier()
 
-    #acc_token,acc_secret = client.get_access_token('7468f085450afb0bbc1292f3a2e28e2e','156626','c4527f6697df08130e0db2b5c6b45d26')
+    #acc_token,acc_secret = client.get_access_token('194b8dfd2e8066f443f040643dab04b2','460889','d553e2e77ee224e6f2f183eee45ff53d')
     #print acc_token,acc_secret
 
-    #a = client.get_notebook_all('db5d193271a20799d4e17dda32cb34b6','c4527f6697df08130e0db2b5c6b45d26')
+    a = client.get_notebook_all()
+    print a
+
+    #a = client.get_notebook_list('V8ytS6J','d5ac9665d75eab5e31499fb1a8b0b424','4736dbaaa41d2e3ab5549d83fd29b970')
     #print a
 
-    #a = client.get_notebook_list('V8ytS6J','db5d193271a20799d4e17dda32cb34b6','c4527f6697df08130e0db2b5c6b45d26')
+    #a = client.get_note('web1372346282340','d5ac9665d75eab5e31499fb1a8b0b424','4736dbaaa41d2e3ab5549d83fd29b970')
     #print a
 
-    #a = client.get_note('web1372346282340','db5d193271a20799d4e17dda32cb34b6','c4527f6697df08130e0db2b5c6b45d26')
-    #print a
-
-    #a = client.get_note_resource("",'db5d193271a20799d4e17dda32cb34b6','c4527f6697df08130e0db2b5c6b45d26')
+    #a = client.get_note_resource("",'d5ac9665d75eab5e31499fb1a8b0b424','4736dbaaa41d2e3ab5549d83fd29b970')
     #print a
     #print client.request_secret
     #print client.request_token
